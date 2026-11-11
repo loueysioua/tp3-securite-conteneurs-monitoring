@@ -1,0 +1,131 @@
+# ============================================================
+# FALCO — agent de sécurité runtime (DaemonSet sur tous les nœuds)
+#
+# Ce DaemonSet :
+#   - s'exécute en privileged avec hostPID (il doit voir TOUS les
+#     processus du nœud pour analyser les syscalls),
+#   - utilise le driver eBPF "modern" du noyau (pas de module noyau),
+#   - se connecte à la socket containerd du nœud pour connaître les
+#     métadonnées des conteneurs (nom, image, namespace),
+#   - écrit ses alertes dans /data/falco-events -> monté depuis le
+#     dossier runtime-data/falco-events de la machine hôte : la démo
+#     lit les alertes avec un simple `tail` côté hôte.
+# ============================================================
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: security
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: falco-custom-rules
+  namespace: security
+data:
+  tp3_rules.yaml: |-
+    - list: shell_binaires
+      items: [ash, bash, dash, fish, ksh, sh, tcsh, zsh, csh, shell]
+
+    # Le conteneur applicatif n'a AUCUNE raison d'exécuter un shell.
+    - rule: Shell lance dans le conteneur applicatif (TP3)
+      desc: Un processus shell (sh, bash...) a ete lance dans le conteneur app-demo, comportement anormal en production.
+      condition: >
+        spawned_process and
+        container and
+        (k8s.pod.name contains "app-demo" or container.name = "app") and
+        proc.name in (shell_binaires)
+      output: >
+        [TP3-ALERTE] Shell execute dans le conteneur applicatif !
+        (utilisateur=%user.name conteneur=%container.name id=%container.id
+        image=%container.image.repository shell=%proc.name
+        parent=%proc.pname commande=%proc.cmdline)
+      priority: WARNING
+      tags: [tp3, shell, intrusion]
+
+    # Filet de sécurité : tout shell dans N'IMPORTE QUEL conteneur du cluster.
+    - rule: Shell lance dans un conteneur quelconque (TP3)
+      desc: Detection generique d'un shell dans un conteneur du cluster.
+      condition: >
+        spawned_process and
+        container and
+        proc.name in (shell_binaires)
+      output: >
+        [TP3-ALERTE] Shell execute dans un conteneur !
+        (utilisateur=%user.name conteneur=%container.name
+        image=%container.image.repository shell=%proc.name
+        parent=%proc.pname commande=%proc.cmdline)
+      priority: NOTICE
+      tags: [tp3, shell, generique]
+---
+apiVersion: apps/v1
+kind: DaemonSet
+metadata:
+  name: falco
+  namespace: security
+  labels: { app: falco }
+spec:
+  selector:
+    matchLabels: { app: falco }
+  template:
+    metadata:
+      labels: { app: falco }
+    spec:
+      hostPID: true            # Falco doit voir tous les processus du nœud
+      serviceAccountName: default
+      tolerations:
+        - effect: NoSchedule
+          operator: Exists
+      containers:
+        - name: falco
+          image: falcosecurity/falco:0.45.2
+          imagePullPolicy: IfNotPresent
+          # "falco" en 1er argument (les args K8s remplacent le CMD de l'image),
+          # puis les surcharges de configuration (sorties + driver eBPF moderne)
+          args:
+            - "falco"
+            - "-o"
+            - "engine.kind=modern_ebpf"
+            - "-o"
+            - "json_output=true"
+            - "-o"
+            - "json_include_output_property=true"
+            - "-o"
+            - "file_output.enabled=true"
+            - "-o"
+            - "file_output.filename=/data/falco-events/falco-alerts.json"
+            - "-o"
+            - "file_output.keep_alive=false"
+          env:
+            - name: FALCO_DRIVER_LOADER_OPTIONS   # driver eBPF moderne : aucun module noyau requis
+              value: modern_ebpf
+            - name: SKIP_DRIVER_LOADER            # pas d'installation de driver : probe eBPF moderne
+              value: "true"
+            - name: HOST_ROOT
+              value: /
+          securityContext:
+            privileged: true
+          resources:
+            requests: { cpu: 100m, memory: 128Mi }
+            limits: { cpu: 500m, memory: 512Mi }
+          volumeMounts:
+            # Règles personnalisées TP3
+            - { name: falco-rules, mountPath: /etc/falco/rules.d, readOnly: true }
+            # Socket containerd du nœud -> métadonnées des conteneurs/pods
+            - { name: containerd-sock, mountPath: /run/containerd, readOnly: true }
+            # BTF du noyau -> probe eBPF moderne
+            - { name: kernel-btf, mountPath: /sys/kernel/btf, readOnly: true }
+            # Modules noyau (repli si ebpf classique)
+            - { name: kernel-modules, mountPath: /lib/modules, readOnly: true }
+            # Sortie des alertes -> visible depuis la machine hôte
+            - { name: falco-events, mountPath: /data/falco-events }
+      volumes:
+        - name: falco-rules
+          configMap: { name: falco-custom-rules }
+        - name: containerd-sock
+          hostPath: { path: /run/k3s/containerd, type: Directory }
+        - name: kernel-btf
+          hostPath: { path: /sys/kernel/btf, type: Directory }
+        - name: kernel-modules
+          hostPath: { path: /lib/modules, type: Directory }
+        - name: falco-events
+          hostPath: { path: /data/falco-events, type: Directory }

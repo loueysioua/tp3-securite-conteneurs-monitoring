@@ -1,0 +1,23 @@
+# ============================================================
+#  IMAGE "AVANT" — version héritée d'un ancien projet.
+#  Défauts de sécurité VOLONTAIRES (point de départ du TP) :
+#    1. Image de base volumineuse non figée (tag flottant "latest")
+#    2. Processus exécuté en root
+#    3. Secret d'API en dur dans le code / dans l'image
+#    4. COPY . . : copie .git, tests, docs... dans l'image
+#    5. Aucun HEALTHCHECK, aucune limite d'outils
+# ============================================================
+FROM python:latest
+
+WORKDIR /app
+
+COPY . .
+
+RUN pip install -r app/requirements.txt
+
+# Mauvaise pratique : le secret est BAKÉ dans l'image (visible avec docker history / docker run env)
+ENV APP_API_KEY="sk-live-5f4a2b7c8d9e1f0a3b6c7d8e9f0a1b2c"
+
+EXPOSE 5000
+
+CMD ["python", "app/app.py"]
