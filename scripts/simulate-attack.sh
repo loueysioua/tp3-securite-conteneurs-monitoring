@@ -16,7 +16,7 @@ cd "$(dirname "$0")/.."
 echo "== Simulation d'une intrusion : shell exécuté dans le pod applicatif =="
 POD=$(docker exec k3s kubectl -n tp3 get pod -l app=app-demo -o jsonpath='{.items[0].metadata.name}')
 echo "   pod cible : $POD"
-docker exec k3s kubectl -n tp3 exec "$POD" -- sh -c "id; whoami; ps"
+docker exec k3s kubectl -n tp3 exec "$POD" -- sh -c "id; whoami; ls /"
 
 echo ""
 echo "== Lecture des alertes Falco (5 dernières) =="
